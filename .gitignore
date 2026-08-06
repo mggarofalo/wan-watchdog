@@ -1,11 +1,13 @@
-# The gateway access code lives here. Never commit it.
+# A filled-in compose file carries the gateway access code and your real
+# hostnames. The copy tracked in git holds only placeholders; keep any deployed
+# copy out of the repository.
+docker-compose.override.yml
+docker-compose.deploy.yml
+docker-compose.local.yml
+
+# Not used by this project, but cheap insurance against one appearing.
 .env
 *.env
-!*.env.example
-
-# Your own hostnames, gateway address and proxy IP. Compose merges this over
-# docker-compose.yml automatically, so nothing site-specific is ever committed.
-docker-compose.override.yml
 
 # Runtime state (reboot history, rate-limit timestamps)
 data/

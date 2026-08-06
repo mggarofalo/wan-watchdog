@@ -1,8 +1,12 @@
 name: wan-watchdog
 
-# This file is the template. Put your own values in docker-compose.override.yml
-# (gitignored, merged automatically) and the access code in .env, so nothing
-# specific to your network is ever committed.
+# Self-contained: every setting is a literal in this file. No .env, no shell
+# interpolation. Copy it to the host you are deploying on and edit the values
+# marked CHANGE ME.
+#
+# Note that this means BGW_ACCESS_CODE lives in this file. That is fine for a
+# deployed copy on your own machine; just do not commit a filled-in copy to a
+# public repository. The version in git carries a placeholder.
 
 services:
   wan-watchdog:
@@ -11,43 +15,40 @@ services:
     restart: unless-stopped
 
     # The reverse proxy publishes this as https://health.<your-domain>/ and the
-    # watchdog then calls that public URL, so the request leaves the house and
-    # comes back in. The left side is the host port nginx should proxy to;
-    # override it with WATCHDOG_HOST_PORT in .env rather than editing here.
-    #
-    # Do not repeat this in docker-compose.override.yml -- Compose appends list
-    # entries instead of replacing them, so the port would be bound twice.
+    # watchdog then calls that public URL, so the request leaves the network and
+    # comes back in. Left side is the host port nginx should proxy to.
     ports:
-      - "${WATCHDOG_HOST_PORT:-8080}:8080"
+      - "8080:8080"
 
     environment:
-      TZ: Etc/UTC
+      TZ: Etc/UTC                                     # CHANGE ME
 
-      # ---- gateway ------------------------------------------------------
+      # ---- gateway --------------------------------------------------------
       # Factory default. Check the second hop of a traceroute if the gateway's
       # LAN subnet was moved to make room for a downstream router.
-      BGW_GATEWAY_HOST: 192.168.1.254
-      # Read from .env next to this file rather than written here, so the
-      # access code never reaches git. Put BGW_ACCESS_CODE=... in .env.
-      BGW_ACCESS_CODE: ${BGW_ACCESS_CODE:?set BGW_ACCESS_CODE in .env}
+      BGW_GATEWAY_HOST: 192.168.1.254                 # CHANGE ME
+      # Printed on the label on the side of the gateway.
+      BGW_ACCESS_CODE: "your-device-access-code"      # CHANGE ME
 
-      # ---- the round trip ------------------------------------------------
+      # ---- the round trip --------------------------------------------------
       # The probe that matters: out to Cloudflare, back in through the gateway
       # and the reverse proxy, to this container's own health endpoint.
-      WATCHDOG_EXTERNAL_URL: https://health.example.com/healthz
+      WATCHDOG_EXTERNAL_URL: https://health.example.com/healthz   # CHANGE ME
 
       # The local reverse proxy, checked with the same Host header nginx routes
       # on. Without this an nginx outage is indistinguishable from a gateway
       # fault -- and nginx holds the TLS certificate, so it takes the external
       # probe down with it every time it restarts.
-      WATCHDOG_PROXY_URL: http://192.168.1.10/healthz
-      WATCHDOG_PROXY_HOST: health.example.com
+      WATCHDOG_PROXY_URL: http://192.168.1.10/healthz             # CHANGE ME
+      WATCHDOG_PROXY_HOST: health.example.com                     # CHANGE ME
 
       # Proves the WAN is up, to tell "inbound broken" from "whole line down".
       WATCHDOG_OUTBOUND_URL: https://1.1.1.1/cdn-cgi/trace
 
-      # ---- tuning --------------------------------------------------------
+      # ---- tuning ----------------------------------------------------------
+      WATCHDOG_PORT: 8080
       WATCHDOG_CHECK_INTERVAL: 60
+      WATCHDOG_PROBE_TIMEOUT: 20
       # Five consecutive failures of the SAME kind, so about five minutes.
       WATCHDOG_FAILURES_BEFORE_REBOOT: 5
       # Never reboot more than once per six hours.
@@ -57,6 +58,9 @@ services:
       # 0 = off. Set to e.g. 3 for an unconditional reboot every three days in
       # addition to the fault-driven logic.
       WATCHDOG_SCHEDULED_REBOOT_DAYS: 0
+      WATCHDOG_STARTUP_DELAY: 15
+      WATCHDOG_STATE_FILE: /data/state.json
+      WATCHDOG_VERIFY_INSTANCE: "true"
 
       # Start here. Logs the reboot decision without sending it, so you can
       # confirm it fires when the fault appears and never otherwise. Set to
@@ -64,11 +68,12 @@ services:
       WATCHDOG_DRY_RUN: "true"
 
       # Optional: any endpoint accepting a plain-text POST, e.g. an ntfy topic.
-      # WATCHDOG_NOTIFY_URL: https://ntfy.sh/your-private-topic
+      WATCHDOG_NOTIFY_URL: ""
 
-      # Optional: enables /status with richer detail. Off entirely when unset,
-      # because the endpoint is reachable from the public internet.
-      # WATCHDOG_STATUS_TOKEN: ${WATCHDOG_STATUS_TOKEN}
+      # Optional: enables /status with richer detail. Empty keeps it returning
+      # 404, which matters because the endpoint is reachable from the public
+      # internet through the same reverse proxy as /healthz.
+      WATCHDOG_STATUS_TOKEN: ""
 
     volumes:
       # Reboot history and the rate-limit clock, so a container restart cannot

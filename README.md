@@ -86,19 +86,18 @@ the public internet through the same reverse proxy.
 git clone https://github.com/mggarofalo/wan-watchdog.git
 cd wan-watchdog
 
-cp .env.example .env          # put the gateway access code here
-$EDITOR .env
-
-cp docker-compose.yml docker-compose.override.yml
-$EDITOR docker-compose.override.yml   # your hostname, gateway IP, proxy IP
+$EDITOR docker-compose.yml    # fill in every value marked CHANGE ME
 
 docker compose up -d
 docker compose logs -f
 ```
 
-The access code is the **device access code** printed on the label on the side
-of the gateway. It is the only secret this needs. `.env` and
-`docker-compose.override.yml` are both gitignored.
+Everything is a literal in `docker-compose.yml` — no `.env`, no shell
+interpolation. That includes `BGW_ACCESS_CODE`, the **device access code**
+printed on the label on the side of the gateway, which is the only secret this
+needs. The copy in git holds a placeholder; keep your filled-in copy out of any
+public repository. `docker-compose.override.yml`, `.deploy.yml` and `.local.yml`
+are gitignored if you would rather keep your values in one of those.
 
 Add a reverse-proxy entry so the endpoint is reachable at
 `https://health.<your-domain>/healthz` — see
