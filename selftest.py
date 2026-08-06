@@ -26,8 +26,8 @@ import health  # noqa: E402
 import watchdog as w  # noqa: E402
 from watchdog import (  # noqa: E402
     APP_DOWN, HEALTHY, INBOUND_BROKEN, KIND_DNS, KIND_MISMATCH, KIND_OK,
-    KIND_ORIGIN, KIND_TLS, KIND_TRANSPORT, LOCAL_FAULT, PROXY_DOWN,
-    REBOOT_WORTHY, WAN_DOWN, Probe, State, evaluate, http_probe,
+    KIND_ORIGIN, KIND_ORIGIN_TLS, KIND_TLS, KIND_TRANSPORT, LOCAL_FAULT,
+    PROXY_DOWN, REBOOT_WORTHY, WAN_DOWN, Probe, State, evaluate, http_probe,
     outbound_probe, tcp_probe, _verify_instance,
 )
 
@@ -48,6 +48,7 @@ REFUSED = Probe("x", False, "refused", None, KIND_TRANSPORT)
 TLSBAD = Probe("x", False, "cert bad", None, KIND_TLS)
 DNSBAD = Probe("x", False, "no such host", None, KIND_DNS)
 WRONGBOX = Probe("x", False, "wrong instance", 200, KIND_MISMATCH)
+CFTLS = Probe("x", False, "HTTP 526", 526, KIND_ORIGIN_TLS)
 
 
 def test_decisions() -> None:
@@ -67,6 +68,14 @@ def test_decisions() -> None:
           evaluate(CF5XX, UP, REFUSED, UP)[0], PROXY_DOWN)
     check("wrong instance answered -> local_fault",
           evaluate(WRONGBOX, UP, UP, UP)[0], LOCAL_FAULT)
+    # 525/526 mean Cloudflare completed TCP to the origin and only then failed
+    # on TLS, which proves inbound delivery works. The plain-HTTP proxy probe
+    # cannot see an expired certificate, so without this the verdict would be
+    # inbound_broken and the gateway would be rebooted to fix a cert.
+    check("expired origin cert (526) -> proxy_down, NOT inbound_broken",
+          evaluate(CFTLS, UP, UP, UP)[0], PROXY_DOWN)
+    check("  and still proxy_down when only the proxy probe is absent",
+          evaluate(CFTLS, UP, None, UP)[0], PROXY_DOWN)
     check("external TLS failure -> local_fault",
           evaluate(TLSBAD, UP, UP, UP)[0], LOCAL_FAULT)
     check("external DNS failure, outbound up -> local_fault",
@@ -207,6 +216,11 @@ def main() -> int:
           http_probe("t", "http://127.0.0.1:9/", 4).kind, KIND_TRANSPORT)
     check("502 is a fault", 502 in w.ORIGIN_UNREACHABLE, True)
     check("404 is not a fault", 404 in w.ORIGIN_UNREACHABLE, False)
+    check("525 is NOT origin-unreachable", 525 in w.ORIGIN_UNREACHABLE, False)
+    check("526 is NOT origin-unreachable", 526 in w.ORIGIN_UNREACHABLE, False)
+    check("525/526 are origin-TLS", w.ORIGIN_TLS_ERROR, {525, 526})
+    check("the two sets never overlap",
+          w.ORIGIN_UNREACHABLE & w.ORIGIN_TLS_ERROR, set())
     if offline:
         print("\n== live network probes ==\n  [SKIP] --offline")
     else:

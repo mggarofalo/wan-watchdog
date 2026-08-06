@@ -52,13 +52,33 @@ The verdict follows from the combination:
 | down | OK | OK | down | `wan_down` | **reboot** |
 | down | OK | OK | OK | `inbound_broken` | **reboot** — this is the fault above |
 
-Three further cases never blame the gateway, because a reboot could not fix
-them and would take the network offline for three minutes to prove it:
+Four further cases never blame the gateway, because a reboot could not fix them
+and would take the network offline for three minutes to prove it:
 
 - a TLS certificate the host cannot validate,
 - a hostname that will not resolve while outbound is otherwise fine,
 - a 200 that came back carrying the **wrong instance id**, which means a cache
-  or a different backend answered rather than this container.
+  or a different backend answered rather than this container,
+- a Cloudflare **525 or 526**, which are not "origin unreachable" at all.
+  Cloudflare returns those *after* completing a TCP connection to the origin
+  and then failing on TLS, so they are positive proof that inbound delivery is
+  working. The fault is the certificate the reverse proxy presents, usually
+  expired. The `proxy` probe speaks plain HTTP and so cannot see this by
+  itself; without the special case, an expired certificate would be diagnosed
+  as `inbound_broken` and reboot the gateway.
+
+### Why the proxy probe takes two settings
+
+`WATCHDOG_PROXY_URL` is *where to send the packets* — the reverse proxy's LAN
+address, so the request goes straight there without touching DNS, Cloudflare or
+the gateway. `WATCHDOG_PROXY_HOST` is *which site it should serve*, sent as the
+`Host` header.
+
+Both are needed because nginx does name-based virtual hosting: one address and
+port serving many sites, choosing the `server { }` block by matching `Host`
+against `server_name`. Connecting by IP without the header means nginx matches
+nothing and falls through to the default server — some other site entirely — so
+the probe would report on the wrong virtual host and tell you nothing useful.
 
 That last one is why the health endpoint returns an id generated at start-up
 and the external probe checks it. Without that, a cached Cloudflare response
@@ -131,8 +151,8 @@ Everything is environment variables.
 | `BGW_GATEWAY_HOST` | `192.168.1.254` | Gateway management address. |
 | `WATCHDOG_EXTERNAL_URL` | — | Your public health URL. Required. |
 | `WATCHDOG_LOCAL_URL` | `http://127.0.0.1:$PORT/healthz` | Direct check of this container. |
-| `WATCHDOG_PROXY_URL` | unset | Reverse proxy check. Strongly recommended. |
-| `WATCHDOG_PROXY_HOST` | unset | `Host` header for the proxy check. |
+| `WATCHDOG_PROXY_URL` | unset | Reverse proxy's LAN address — where to send the probe. Strongly recommended. |
+| `WATCHDOG_PROXY_HOST` | unset | `Host` header, so nginx serves the right virtual host. |
 | `WATCHDOG_OUTBOUND_URL` | `https://1.1.1.1/cdn-cgi/trace` | Known-good internet endpoint. |
 | `WATCHDOG_PORT` | `8080` | Port the health endpoint listens on. |
 | `WATCHDOG_CHECK_INTERVAL` | `60` | Seconds between cycles. |

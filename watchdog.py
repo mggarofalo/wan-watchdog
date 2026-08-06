@@ -51,9 +51,16 @@ from bgw320 import Gateway, GatewayError  # noqa: E402
 
 LOG = logging.getLogger("wan-watchdog")
 
-# Cloudflare returns these when it cannot get a usable response from the
-# origin. Ordinary 4xx from the app itself means the origin is reachable.
-ORIGIN_UNREACHABLE = {502, 504, 520, 521, 522, 523, 524, 525, 526}
+# Cloudflare returns these when it could not get a usable response from the
+# origin at all. Ordinary 4xx from the app itself means the origin is reachable.
+ORIGIN_UNREACHABLE = {502, 504, 520, 521, 522, 523, 524}
+
+# Cloudflare DID reach the origin on these: the TCP connection succeeded and
+# TLS then failed -- 525 is a failed handshake, 526 an invalid or expired
+# certificate. Both are positive proof that inbound packets are flowing, so
+# they must never be read as a gateway fault. The certificate belongs to the
+# reverse proxy, and rebooting the gateway cannot renew it.
+ORIGIN_TLS_ERROR = {525, 526}
 
 # How a probe failed. Only TRANSPORT and ORIGIN failures are evidence against
 # the gateway. A certificate that will not validate, a name that will not
@@ -62,6 +69,7 @@ ORIGIN_UNREACHABLE = {502, 504, 520, 521, 522, 523, 524, 525, 526}
 # it.
 KIND_OK = "ok"
 KIND_ORIGIN = "origin_unreachable"
+KIND_ORIGIN_TLS = "origin_tls"  # reached the origin, its certificate failed
 KIND_TRANSPORT = "transport"
 KIND_TLS = "tls"
 KIND_DNS = "dns"
@@ -246,6 +254,10 @@ def http_probe(
         if exc.code in ORIGIN_UNREACHABLE:
             return Probe(name, False, f"HTTP {exc.code} (origin unreachable)",
                          exc.code, KIND_ORIGIN)
+        if exc.code in ORIGIN_TLS_ERROR:
+            return Probe(name, False,
+                         f"HTTP {exc.code} (origin reached, its TLS failed — "
+                         "the inbound path is working)", exc.code, KIND_ORIGIN_TLS)
         return Probe(name, True, f"HTTP {exc.code} (origin responded)", exc.code, KIND_OK)
     except urllib.error.URLError as exc:
         return Probe(name, False, f"unreachable: {exc.reason}", None, _classify(exc.reason))
@@ -355,6 +367,19 @@ def evaluate(
     evidence actually points at the network path."""
     if external.ok:
         return HEALTHY, "external round trip verified"
+
+    if external.kind == KIND_ORIGIN_TLS:
+        # Cloudflare completed a TCP connection to the origin and only then
+        # failed on TLS, which proves inbound delivery is working. The fault is
+        # the certificate the reverse proxy presents -- very likely expired.
+        # The plain-HTTP proxy probe cannot see this, so without this branch
+        # the verdict would be inbound_broken and the gateway would be rebooted
+        # to fix a certificate.
+        return PROXY_DOWN, (
+            f"external down ({external.detail}) — inbound reachability is fine, "
+            "so this is the reverse proxy's TLS certificate. Check whether it "
+            "has expired; a gateway reboot cannot fix it."
+        )
 
     if external.kind == KIND_MISMATCH:
         return LOCAL_FAULT, (
