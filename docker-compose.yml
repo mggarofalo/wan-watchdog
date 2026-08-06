@@ -12,9 +12,13 @@ services:
 
     # The reverse proxy publishes this as https://health.<your-domain>/ and the
     # watchdog then calls that public URL, so the request leaves the house and
-    # comes back in. Left side is the host port nginx should proxy to.
+    # comes back in. The left side is the host port nginx should proxy to;
+    # override it with WATCHDOG_HOST_PORT in .env rather than editing here.
+    #
+    # Do not repeat this in docker-compose.override.yml -- Compose appends list
+    # entries instead of replacing them, so the port would be bound twice.
     ports:
-      - "8080:8080"
+      - "${WATCHDOG_HOST_PORT:-8080}:8080"
 
     environment:
       TZ: Etc/UTC
