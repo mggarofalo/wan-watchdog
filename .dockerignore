@@ -1,0 +1,14 @@
+.git
+.github
+.gitignore
+.env
+*.env
+data/
+state.json
+docker-compose.yml
+nginx/
+README.md
+LICENSE
+__pycache__/
+*.py[cod]
+.venv/

@@ -1,0 +1,55 @@
+# Reverse-proxy entry for the watchdog's health endpoint.
+#
+# This block is what turns the container's plain-HTTP endpoint into the public
+# https://health.<your-domain>/healthz that the watchdog calls back. The
+# certificate lives here, in the proxy -- so while this proxy is down the
+# external probe cannot succeed. That is expected and handled: the watchdog
+# runs a separate probe against the proxy and reports "proxy_down" rather than
+# blaming the gateway.
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name health.example.com;
+
+    # Behind Cloudflare's proxy, a Cloudflare Origin Certificate is the usual
+    # choice here; a Let's Encrypt certificate works equally well.
+    ssl_certificate     /etc/nginx/certs/example.com/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/example.com/privkey.pem;
+
+    # The endpoint is tiny and polled once a minute; keep it cheap.
+    access_log off;
+
+    location / {
+        # If nginx runs as a container on the same Docker network as the
+        # watchdog, prefer the service name so it survives IP changes:
+        #     proxy_pass http://wan-watchdog:8080;
+        # Otherwise point at the published port on the Docker host.
+        proxy_pass http://192.168.1.10:8080;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # A cached 200 anywhere in the chain would blind the watchdog to a real
+        # outage. The application already sends no-store; this makes it
+        # explicit at the edge too.
+        proxy_no_cache 1;
+        proxy_cache_bypass 1;
+        add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+
+        # Fail fast. A hung origin should surface as an error the watchdog can
+        # see, not as a request that sits open past the probe timeout.
+        proxy_connect_timeout 5s;
+        proxy_read_timeout    10s;
+    }
+}
+
+# Optional: send plain HTTP to HTTPS. Cloudflare reaches the origin on 443 when
+# the SSL mode is Full or Full (strict), so this is mostly for local access.
+server {
+    listen 80;
+    server_name health.example.com;
+    return 301 https://$host$request_uri;
+}

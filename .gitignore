@@ -1,0 +1,25 @@
+# The gateway access code lives here. Never commit it.
+.env
+*.env
+!*.env.example
+
+# Your own hostnames, gateway address and proxy IP. Compose merges this over
+# docker-compose.yml automatically, so nothing site-specific is ever committed.
+docker-compose.override.yml
+
+# Runtime state (reboot history, rate-limit timestamps)
+data/
+state.json
+*.tmp
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
