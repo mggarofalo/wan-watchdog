@@ -6,6 +6,8 @@
 data/
 state.json
 docker-compose.yml
+docker-compose.override.yml
+*.override.yml
 nginx/
 README.md
 LICENSE
