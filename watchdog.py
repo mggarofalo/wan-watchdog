@@ -33,9 +33,11 @@ import argparse
 import json
 import logging
 import os
+import signal
 import socket
 import ssl
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -50,6 +52,30 @@ import health  # noqa: E402
 from bgw320 import Gateway, GatewayError  # noqa: E402
 
 LOG = logging.getLogger("wan-watchdog")
+
+# Set by SIGTERM/SIGINT. Every wait in this process goes through the event
+# rather than time.sleep(), so a stop takes effect immediately instead of at the
+# end of the current interval -- which matters most for the seven-minute
+# post-reboot grace.
+_STOP = threading.Event()
+
+
+def _install_signal_handlers() -> None:
+    """Make `docker stop` exit promptly.
+
+    The container runs python as PID 1, and the kernel applies no default action
+    for SIGTERM to PID 1: a process there dies from it only if it installs a
+    handler. Python installs one for SIGINT but not SIGTERM, so without this the
+    watchdog ignores the stop signal outright and Docker waits out the full
+    grace period before resorting to SIGKILL.
+    """
+    def _stop(signum: int, _frame) -> None:
+        LOG.info("received %s — shutting down", signal.Signals(signum).name)
+        _STOP.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, _stop)
+
 
 # Cloudflare returns these when it could not get a usable response from the
 # origin at all. Ordinary 4xx from the app itself means the origin is reachable.
@@ -539,7 +565,7 @@ def run_cycle(cfg: Config, state: State, state_path: Path, instance_id: str,
 
     if act and state.consecutive_failures >= cfg.failures_before_reboot:
         if reboot_gateway(cfg, state, reason, state_path):
-            time.sleep(cfg.post_reboot_grace)
+            _STOP.wait(cfg.post_reboot_grace)
     return verdict
 
 
@@ -561,7 +587,7 @@ def maybe_scheduled_reboot(cfg: Config, state: State, state_path: Path) -> None:
         return
     reboot_gateway(cfg, state,
                    f"scheduled reboot every {cfg.scheduled_reboot_days}d", state_path)
-    time.sleep(cfg.post_reboot_grace)
+    _STOP.wait(cfg.post_reboot_grace)
 
 
 def build_status_provider(cfg: Config, state: State, instance_id: str):
@@ -595,6 +621,8 @@ def main(argv: list[str] | None = None) -> int:
         datefmt="%Y-%m-%d %H:%M:%S",
         stream=sys.stdout,
     )
+
+    _install_signal_handlers()
 
     cfg = load_config(require_code=not args.test)
     state_path = Path(cfg.state_file)
@@ -644,7 +672,8 @@ def main(argv: list[str] | None = None) -> int:
         # Give the reverse proxy and the network a moment after a host reboot,
         # so the first cycle does not count a cold start as a fault.
         LOG.info("waiting %ds before the first check", cfg.startup_delay)
-        time.sleep(cfg.startup_delay)
+        if _STOP.wait(cfg.startup_delay):
+            return 0
 
     try:
         Gateway(cfg.gateway_host, cfg.access_code, cfg.probe_timeout).login()
@@ -653,13 +682,16 @@ def main(argv: list[str] | None = None) -> int:
         # Fail loudly now rather than at 3am when it actually matters.
         LOG.error("gateway login failed at startup: %s — reboots will not work", exc)
 
-    while True:
+    while not _STOP.is_set():
         try:
             run_cycle(cfg, state, state_path, instance_id)
             maybe_scheduled_reboot(cfg, state, state_path)
         except Exception as exc:  # a watchdog that dies is worse than useless
             LOG.exception("unhandled error in check cycle: %s", exc)
-        time.sleep(cfg.check_interval)
+        _STOP.wait(cfg.check_interval)
+
+    LOG.info("stopped")
+    return 0
 
 
 if __name__ == "__main__":
