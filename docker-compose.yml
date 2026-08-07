@@ -18,29 +18,29 @@ services:
     # watchdog then calls that public URL, so the request leaves the network and
     # comes back in. Left side is the host port nginx should proxy to.
     ports:
-      - "8080:8080"
+      - "3000:8080"
 
     environment:
-      TZ: Etc/UTC                                     # CHANGE ME
+      TZ: Etc/UTC
 
       # ---- gateway --------------------------------------------------------
       # Factory default. Check the second hop of a traceroute if the gateway's
       # LAN subnet was moved to make room for a downstream router.
-      BGW_GATEWAY_HOST: 192.168.1.254                 # CHANGE ME
+      BGW_GATEWAY_HOST: CHANGE_ME
       # Printed on the label on the side of the gateway.
-      BGW_ACCESS_CODE: "your-device-access-code"      # CHANGE ME
+      BGW_ACCESS_CODE: "CHANGE_ME"
 
       # ---- the round trip --------------------------------------------------
       # The probe that matters: out to Cloudflare, back in through the gateway
       # and the reverse proxy, to this container's own health endpoint.
-      WATCHDOG_EXTERNAL_URL: https://health.example.com/healthz   # CHANGE ME
+      WATCHDOG_EXTERNAL_URL: https://health.CHANGE_ME.com/healthz
 
       # The local reverse proxy, checked with the same Host header nginx routes
       # on. Without this an nginx outage is indistinguishable from a gateway
       # fault -- and nginx holds the TLS certificate, so it takes the external
       # probe down with it every time it restarts.
-      WATCHDOG_PROXY_URL: http://192.168.1.10/healthz             # CHANGE ME
-      WATCHDOG_PROXY_HOST: health.example.com                     # CHANGE ME
+      WATCHDOG_PROXY_URL: http://CHANGE_ME_HOST_IP/healthz
+      WATCHDOG_PROXY_HOST: health.CHANGE_ME.com
 
       # Proves the WAN is up, to tell "inbound broken" from "whole line down".
       WATCHDOG_OUTBOUND_URL: https://1.1.1.1/cdn-cgi/trace
@@ -57,7 +57,7 @@ services:
       WATCHDOG_POST_REBOOT_GRACE: 420
       # 0 = off. Set to e.g. 3 for an unconditional reboot every three days in
       # addition to the fault-driven logic.
-      WATCHDOG_SCHEDULED_REBOOT_DAYS: 0
+      WATCHDOG_SCHEDULED_REBOOT_DAYS: 7
       WATCHDOG_STARTUP_DELAY: 15
       WATCHDOG_STATE_FILE: /data/state.json
       WATCHDOG_VERIFY_INSTANCE: "true"

@@ -21,11 +21,16 @@ server {
     access_log off;
 
     location / {
+        # Two ports are in play, deliberately. The watchdog always listens on
+        # 8080 inside the container; the compose file publishes that on 3000 on
+        # the Docker host, because 8080 is commonly already spoken for.
+        #
         # If nginx runs as a container on the same Docker network as the
-        # watchdog, prefer the service name so it survives IP changes:
+        # watchdog, address it by service name on the INTERNAL port, so this
+        # survives IP changes and ignores the published port entirely:
         #     proxy_pass http://wan-watchdog:8080;
-        # Otherwise point at the published port on the Docker host.
-        proxy_pass http://192.168.1.10:8080;
+        # Otherwise point at the PUBLISHED port on the Docker host.
+        proxy_pass http://192.168.1.10:3000;
 
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
