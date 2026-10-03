@@ -87,6 +87,18 @@ would look like a healthy round trip forever.
 The blind timer is still available if you want it as a backstop: set
 `WATCHDOG_SCHEDULED_REBOOT_DAYS`. It is off by default.
 
+## External outage alerts
+
+The optional [Cloudflare monitor](cloud-monitor/README.md) checks this endpoint
+from outside the home every five minutes and sends ntfy alerts once per incident.
+It can notify during a total WAN outage, when the local watchdog cannot reach a
+notification service. Two failed checks open an incident; three successful checks
+close it. Incident state and notification retries persist in a Durable Object.
+
+The Compose template disables scheduled reboots by default. Existing deployments
+must explicitly apply that setting; cloning or updating the repo does not change
+the running container.
+
 ## The health endpoint
 
 `GET /healthz` returns, with `Cache-Control: no-store`:
