@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "wan-watchdog-monitor",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "vars": {
+    "HEALTH_URL": "https://health.wallingford.me/healthz",
+    "FAILURES_TO_OPEN": "2",
+    "SUCCESSES_TO_CLOSE": "3"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "MONITOR", "class_name": "WanMonitor" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WanMonitor"] }],
+  "observability": { "enabled": true }
+}
