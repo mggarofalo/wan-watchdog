@@ -17,6 +17,7 @@ import pathlib
 import sys
 import tempfile
 import urllib.request
+import unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -211,6 +212,10 @@ def main() -> int:
     test_health_server()
     test_state()
     test_html_parsing()
+    suite = unittest.defaultTestLoader.loadTestsFromName("test_notifier")
+    result = unittest.TextTestRunner().run(suite)
+    if not result.wasSuccessful():
+        failures.append("local notifier/release policy tests failed")
     print("\n== local-only probes ==")
     check("refused connection -> transport",
           http_probe("t", "http://127.0.0.1:9/", 4).kind, KIND_TRANSPORT)

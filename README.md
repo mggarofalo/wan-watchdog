@@ -163,12 +163,55 @@ Everything is environment variables.
 | `WATCHDOG_SCHEDULED_REBOOT_DAYS` | `0` | Unconditional reboot interval. `0` = off. |
 | `WATCHDOG_STATE_FILE` | `/data/state.json` | Reboot history and rate-limit clock. |
 | `WATCHDOG_NOTIFY_URL` | unset | Endpoint accepting a plain-text POST. |
+| `WATCHDOG_NOTIFY_TOKEN` | unset | Optional bearer token for a protected ntfy topic. |
 | `WATCHDOG_STATUS_TOKEN` | unset | Enables `/status`. |
 | `WATCHDOG_VERIFY_INSTANCE` | `true` | Check the instance id on the way back in. |
 | `WATCHDOG_STARTUP_DELAY` | `15` | Grace before the first cycle. |
 | `WATCHDOG_DRY_RUN` | `false` | Log reboot decisions without sending them. |
 
 ## Safety rails
+
+### Local diagnostic notifications (1.1.0)
+
+Set `WATCHDOG_NOTIFY_URL` to your full ntfy topic URL (or another endpoint that
+accepts plain-text POSTs). Set `WATCHDOG_NOTIFY_TOKEN` only if the topic requires
+bearer authentication. Use HTTPS for protected topics. Keep these values in the
+deployed Compose file, not in git.
+
+Notifications describe local decisions rather than repeating the cloud monitor's
+generic outage alert:
+
+- One message per confirmed local diagnosis (app, proxy, DNS/TLS/configuration)
+  per incident, after the existing failure threshold.
+- One cooldown-blocked message and one reboot-failed message per incident.
+- A reboot-request notice sent **before** requesting the restart. It does not
+  claim that the gateway restarted or recovered. Each subsequent successful-reboot
+  count permits a new request notice if another restart is needed later.
+- One recovery after **three consecutive healthy checks**. A brief healthy probe
+  does not rearm notifications; a new confirmed incident can notify again.
+
+Incident identifiers, deduplication keys, pending messages and retry deadlines
+live in the existing `/data/state.json`. Keep the data volume mounted. Existing
+state files load without migration and retain the reboot cooldown.
+
+Failed deliveries retry in order, with exponential backoff from one minute to
+one hour and support for a longer `Retry-After`. Up to four pending messages are
+delivered per check. During a WAN outage, diagnostics may arrive only after the
+connection returns; each includes its original observation time and incident ID.
+The notifier uses five-second request timeouts and does not follow redirects.
+An ambiguous POST response or crash after acceptance can still cause a duplicate
+retry: this is deduplication of events, not guaranteed exactly-once delivery.
+
+`--test` never sends notifications. Dry-run mode does not announce a reboot that
+it will not request, but can still report local diagnostic faults. Emptying
+`WATCHDOG_NOTIFY_URL` disables sending and new queue entries; existing queued
+messages remain for delivery if notifications are re-enabled.
+
+The external Cloudflare monitor remains useful: it can alert while the home's
+own connection is down, when local delivery cannot work. Local diagnostics and
+external reachability are independent and can both notify for the same incident.
+
+### Reboot safeguards
 
 - **Debounce** — the fault must persist for `WATCHDOG_FAILURES_BEFORE_REBOOT`
   cycles *of the same verdict*. Counting per verdict matters: the reverse proxy
@@ -216,6 +259,41 @@ labels verbatim, so on that page only the *last* match is the actual value.
 
 Images are built for `linux/amd64` and `linux/arm64` and published to
 `ghcr.io/mggarofalo/wan-watchdog`.
+
+### Image channels and releases
+
+| Image tag | Updated by |
+| --- | --- |
+| `1.1.0` | The matching `v1.1.0` Git release tag |
+| `1.1`, `1` | Final semver releases in that minor/major line |
+| `latest` | Every successful branch or version-tag push build, including development branches and prereleases |
+| `stable` | Final major/minor releases only (`vX.Y.0`); patches and prereleases leave it unchanged |
+| `sha-<commit>` | Every published build, for traceability |
+
+Pull-request builds validate without publishing. Manual workflow dispatches publish
+branch/SHA/version tags but do not promote `latest` or `stable`. Shared publication
+jobs run serially to avoid simultaneous writes to the mutable channels; `latest`
+reflects the most recently published successful push build. GitHub may coalesce
+pending runs during a burst of pushes.
+
+The Compose template uses `stable` and disables scheduled gateway reboots. For
+exact reproducibility, pin a full version or digest. Treat release tags as immutable:
+do not delete, move, or reuse an existing Git version tag. Publishing validates
+that the Git tag matches `health.VERSION`; semver prereleases use `vX.Y.Z-name`.
+
+To upgrade the running host after the `1.1.0` release, keep your existing secrets
+and gateway settings, set the image to `ghcr.io/mggarofalo/wan-watchdog:stable`
+(or `:1.1.0`), and ensure `WATCHDOG_SCHEDULED_REBOOT_DAYS: 0`. Then run:
+
+```sh
+docker compose pull wan-watchdog
+docker compose up -d wan-watchdog
+docker compose logs --tail=30 wan-watchdog
+```
+
+For a new release, update `health.VERSION`, run `python selftest.py --offline`,
+merge the reviewed change, and push its matching `vX.Y.Z` tag. `v1.1.0` is the
+first tagged release; the earlier health endpoint advertised `1.0`.
 
 ## Reducing how often the fault happens
 

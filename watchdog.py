@@ -49,6 +49,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import health  # noqa: E402
+import notifier
 from bgw320 import Gateway, GatewayError  # noqa: E402
 
 LOG = logging.getLogger("wan-watchdog")
@@ -153,6 +154,7 @@ class Config:
     startup_delay: int
     dry_run: bool
     verify_instance: bool
+    notify_token: str = ""
 
 
 def load_config(require_code: bool = True) -> Config:
@@ -179,6 +181,7 @@ def load_config(require_code: bool = True) -> Config:
         startup_delay=_env_int("WATCHDOG_STARTUP_DELAY", 15),
         dry_run=_env_bool("WATCHDOG_DRY_RUN"),
         verify_instance=_env_bool("WATCHDOG_VERIFY_INSTANCE", True),
+        notify_token=_env("WATCHDOG_NOTIFY_TOKEN"),
     )
     if not cfg.external_url:
         raise SystemExit("WATCHDOG_EXTERNAL_URL is required "
@@ -211,6 +214,9 @@ class State:
     last_verdict: str = ""
     last_check_ts: float = 0.0
     history: list = dataclass_field(default_factory=list)
+    notification_incident: dict = dataclass_field(default_factory=dict)
+    notification_outbox: list = dataclass_field(default_factory=list)
+    notification_healthy_checks: int = 0
 
     @classmethod
     def load(cls, path: Path) -> "State":
@@ -220,14 +226,16 @@ class State:
             return cls()
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
-    def save(self, path: Path) -> None:
+    def save(self, path: Path) -> bool:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".tmp")
             tmp.write_text(json.dumps(self.__dict__, indent=2))
             tmp.replace(path)  # atomic: a crash cannot truncate the state
+            return True
         except OSError as exc:
             LOG.warning("could not persist state to %s: %s", path, exc)
+            return False
 
 
 def _classify(reason: object) -> str:
@@ -262,7 +270,7 @@ def http_probe(
         target = f"{url}{sep}_wd={uuid.uuid4().hex[:12]}"
 
     headers = {
-        "User-Agent": "wan-watchdog/1.0",
+        "User-Agent": f"wan-watchdog/{health.VERSION}",
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
     }
@@ -453,20 +461,6 @@ def evaluate(
 # --------------------------------------------------------------------------
 
 
-def notify(cfg: Config, message: str) -> None:
-    if not cfg.notify_url:
-        return
-    try:
-        req = urllib.request.Request(
-            cfg.notify_url,
-            data=message.encode("utf-8"),
-            headers={"User-Agent": "wan-watchdog/1.0", "Content-Type": "text/plain"},
-        )
-        urllib.request.urlopen(req, timeout=10).close()
-    except Exception as exc:  # notification must never break the watchdog
-        LOG.warning("notification failed: %s", exc)
-
-
 def reboot_gateway(cfg: Config, state: State, reason: str, state_path: Path) -> bool:
     """Restart the gateway, honouring the rate limit. True if the request was sent."""
     now = time.time()
@@ -475,7 +469,9 @@ def reboot_gateway(cfg: Config, state: State, reason: str, state_path: Path) -> 
         LOG.error("FAULT PERSISTS (%s) but the last reboot was %.0f min ago and the "
                   "rate limit is %.0f min. Not rebooting — this needs a human.",
                   reason, since / 60, cfg.min_seconds_between_reboots / 60)
-        notify(cfg, f"[wan-watchdog] fault persists after a recent reboot: {reason}")
+        notifier.queue(cfg, state, state_path, "cooldown",
+                       f"Fault persists, but reboot cooldown blocks another restart: {reason}")
+        notifier.flush(cfg, state, state_path)
         return False
 
     LOG.warning("REBOOTING GATEWAY: %s", reason)
@@ -484,13 +480,20 @@ def reboot_gateway(cfg: Config, state: State, reason: str, state_path: Path) -> 
         return False
     if not cfg.access_code:
         LOG.error("no BGW_ACCESS_CODE configured — cannot reboot")
+        notifier.queue(cfg, state, state_path, "missing_code", "Cannot reboot: no BGW_ACCESS_CODE configured.")
+        notifier.flush(cfg, state, state_path)
         return False
 
+    notifier.queue(cfg, state, state_path, f"reboot_requested:{state.reboot_count + 1}",
+                   f"Requesting a gateway reboot: {reason}. Recovery is not yet verified.")
+    notifier.flush(cfg, state, state_path)
     try:
         Gateway(cfg.gateway_host, cfg.access_code, cfg.probe_timeout).reboot()
     except GatewayError as exc:
         LOG.error("gateway restart FAILED: %s", exc)
-        notify(cfg, f"[wan-watchdog] gateway restart FAILED: {exc}")
+        notifier.queue(cfg, state, state_path, "reboot_failed",
+                       "Gateway restart request failed. Inspect local logs for the gateway error.")
+        notifier.flush(cfg, state, state_path)
         return False
 
     state.last_reboot_ts = now
@@ -502,7 +505,6 @@ def reboot_gateway(cfg: Config, state: State, reason: str, state_path: Path) -> 
 
     LOG.warning("restart sent; waiting %ds for the gateway to come back",
                 cfg.post_reboot_grace)
-    notify(cfg, f"[wan-watchdog] restarted the gateway: {reason}")
     return True
 
 
@@ -536,12 +538,16 @@ def run_cycle(cfg: Config, state: State, state_path: Path, instance_id: str,
     previous_verdict = state.last_verdict
     state.last_verdict = verdict
     state.last_check_ts = time.time()
+    if act:
+        notifier.observe(cfg, state, state_path, verdict == HEALTHY)
 
     if verdict == HEALTHY:
         if state.consecutive_failures:
             LOG.info("recovered after %d consecutive failures", state.consecutive_failures)
         state.consecutive_failures = 0
         state.save(state_path)
+        if act:
+            notifier.flush(cfg, state, state_path)
         return verdict
 
     if verdict != previous_verdict:
@@ -559,13 +565,18 @@ def run_cycle(cfg: Config, state: State, state_path: Path, instance_id: str,
     if verdict not in REBOOT_WORTHY:
         # A stopped container, a dead nginx or a broken CA bundle cannot be
         # fixed by rebooting the gateway. Report and stop.
-        if state.consecutive_failures == cfg.failures_before_reboot:
-            notify(cfg, f"[wan-watchdog] {verdict}, gateway not at fault: {reason}")
+        if act and state.consecutive_failures >= cfg.failures_before_reboot:
+            notifier.queue(cfg, state, state_path, f"diagnosis:{verdict}",
+                           f"{verdict}; gateway reboot will not help: {reason}")
+        if act:
+            notifier.flush(cfg, state, state_path)
         return verdict
 
     if act and state.consecutive_failures >= cfg.failures_before_reboot:
         if reboot_gateway(cfg, state, reason, state_path):
             _STOP.wait(cfg.post_reboot_grace)
+    elif act:
+        notifier.flush(cfg, state, state_path)
     return verdict
 
 
@@ -585,9 +596,9 @@ def maybe_scheduled_reboot(cfg: Config, state: State, state_path: Path) -> None:
         return
     if (time.time() - state.last_reboot_ts) < interval:
         return
-    reboot_gateway(cfg, state,
-                   f"scheduled reboot every {cfg.scheduled_reboot_days}d", state_path)
-    _STOP.wait(cfg.post_reboot_grace)
+    if reboot_gateway(cfg, state,
+                      f"scheduled reboot every {cfg.scheduled_reboot_days}d", state_path):
+        _STOP.wait(cfg.post_reboot_grace)
 
 
 def build_status_provider(cfg: Config, state: State, instance_id: str):
@@ -603,6 +614,8 @@ def build_status_provider(cfg: Config, state: State, instance_id: str):
             "last_reboot_reason": state.last_reboot_reason,
             "history": state.history,
             "dry_run": cfg.dry_run,
+            "notification_incident": state.notification_incident.get("id"),
+            "pending_notifications": len(state.notification_outbox),
         }
     return provider
 
