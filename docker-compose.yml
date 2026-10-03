@@ -10,7 +10,7 @@ name: wan-watchdog
 
 services:
   wan-watchdog:
-    image: ghcr.io/mggarofalo/wan-watchdog:latest
+    image: ghcr.io/mggarofalo/wan-watchdog:stable
     container_name: wan-watchdog
     restart: unless-stopped
 
@@ -57,7 +57,7 @@ services:
       WATCHDOG_POST_REBOOT_GRACE: 420
       # 0 = off. Set to e.g. 3 for an unconditional reboot every three days in
       # addition to the fault-driven logic.
-      WATCHDOG_SCHEDULED_REBOOT_DAYS: 7
+      WATCHDOG_SCHEDULED_REBOOT_DAYS: 0
       WATCHDOG_STARTUP_DELAY: 15
       WATCHDOG_STATE_FILE: /data/state.json
       WATCHDOG_VERIFY_INSTANCE: "true"
@@ -69,6 +69,7 @@ services:
 
       # Optional: any endpoint accepting a plain-text POST, e.g. an ntfy topic.
       WATCHDOG_NOTIFY_URL: ""
+      WATCHDOG_NOTIFY_TOKEN: ""
 
       # Optional: enables /status with richer detail. Empty keeps it returning
       # 404, which matters because the endpoint is reachable from the public

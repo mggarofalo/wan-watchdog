@@ -29,7 +29,7 @@ from typing import Callable
 
 LOG = logging.getLogger("wan-watchdog.health")
 
-VERSION = "1.0"
+VERSION = "1.1.0"
 
 
 def new_instance_id() -> str:

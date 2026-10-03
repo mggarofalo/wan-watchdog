@@ -8,7 +8,7 @@ RUN apk add --no-cache tzdata
 
 WORKDIR /app
 
-COPY bgw320.py health.py watchdog.py selftest.py ./
+COPY bgw320.py health.py watchdog.py notifier.py selftest.py test_notifier.py ./
 COPY testdata/ ./testdata/
 
 # Run unprivileged. The watchdog needs no special capabilities: it makes
