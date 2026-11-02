@@ -33,7 +33,9 @@ thousand. After an hour, the start of the incident has gone from the router.
 | Syslog receiver | `MESH_SYSLOG_PORT` | Writes every router log line to `/data/router-logs/router-YYYY-MM-DD.log` and counts the beacon-failure lines |
 | Router API polling | `MESH_ROUTER_URL` + password | Each cycle, reads the AiMesh node list and router uptime: the data on the router's AiMesh page |
 
-Either works alone. Both are checked once per watchdog cycle, about a minute.
+Either works alone. Both are checked every `MESH_CHECK_INTERVAL` (60 s by
+default), whatever the gateway check interval is. The one exception: checks
+pause while the watchdog waits out the grace period after a gateway reboot.
 
 ### Alerts
 
@@ -65,8 +67,11 @@ therefore does not page you.
    **Administration → System**). Enter the Docker host's LAN address, keep port
    514, and apply.
 3. **Check.**
-   - `docker compose exec wan-watchdog python3 /app/watchdog.py --test`
-     should print a `mesh:` line listing every node as `online`.
+   - `docker compose exec wan-watchdog python3 /app/watchdog.py --mesh-test`
+     should print `mesh: router ok` and list every node as `online`. This
+     checks only the router and starts no servers, so it is safe to run
+     inside the running container. A full `--test` is not: it needs the
+     health port, so follow the procedure in [operations](operations.md).
    - Within a minute, `data/router-logs/` on the host should contain today's file.
 
 Polling uses the router's mobile-app login, so it does not sign you out of the
@@ -95,7 +100,8 @@ Files older than `MESH_LOG_RETENTION_DAYS` are deleted.
 | `MESH_ROUTER_URL` | Unset | Router web address, e.g. `http://192.168.1.1`. Unset turns polling off |
 | `MESH_ROUTER_USER` | `admin` | Router admin user |
 | `MESH_ROUTER_PASSWORD` | Unset | Required when `MESH_ROUTER_URL` is set |
-| `MESH_OFFLINE_CHECKS` | `5` | Consecutive failing checks before a satellite or API alert |
+| `MESH_CHECK_INTERVAL` | `60` | Seconds between mesh checks (minimum 10), independent of `WATCHDOG_CHECK_INTERVAL` |
+| `MESH_OFFLINE_CHECKS` | `5` | Consecutive failing mesh checks before a satellite or API alert |
 | `MESH_BOOT_GRACE` | `600` | Seconds after a router boot during which offline satellites are ignored |
 | `MESH_SYSLOG_PORT` | `0` (template: `5514`) | UDP port to receive syslog on inside the container. `0` turns it off |
 | `MESH_SYSLOG_PATTERN` | beacon-failure regex | Python regex for log lines that count toward the alert. Empty turns pattern alerts off |
