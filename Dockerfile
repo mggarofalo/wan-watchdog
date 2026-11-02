@@ -8,7 +8,7 @@ RUN apk add --no-cache tzdata
 
 WORKDIR /app
 
-COPY bgw320.py health.py watchdog.py notifier.py selftest.py test_notifier.py ./
+COPY bgw320.py health.py watchdog.py notifier.py mesh.py selftest.py test_notifier.py test_mesh.py ./
 COPY testdata/ ./testdata/
 
 # Run unprivileged. The watchdog needs no special capabilities: it makes
@@ -24,7 +24,7 @@ ENV PYTHONUNBUFFERED=1 \
     WATCHDOG_PORT=8080 \
     WATCHDOG_STATE_FILE=/data/state.json
 
-EXPOSE 8080
+EXPOSE 8080 5514/udp
 
 # Reboot history lives here, so the rate limit survives a container restart.
 VOLUME ["/data"]

@@ -19,6 +19,10 @@ services:
     # comes back in. Left side is the host port nginx should proxy to.
     ports:
       - "3000:8080"
+      # Router remote syslog (mesh monitor). The router sends to udp/514 by
+      # default; the container listens unprivileged on 5514. Remove this line
+      # if MESH_SYSLOG_PORT is 0.
+      - "514:5514/udp"
 
     environment:
       TZ: Etc/UTC
@@ -70,6 +74,22 @@ services:
       # Optional: any endpoint accepting a plain-text POST, e.g. an ntfy topic.
       WATCHDOG_NOTIFY_URL: ""
       WATCHDOG_NOTIFY_TOKEN: ""
+
+      # ---- router mesh monitor (optional) ---------------------------------
+      # Polls an ASUS AiMesh router for satellite status and alerts (through
+      # WATCHDOG_NOTIFY_URL) when one drops off. Never reboots the router.
+      # Empty MESH_ROUTER_URL turns polling off. Like BGW_ACCESS_CODE, the
+      # password lives in this file: keep filled-in copies out of git.
+      MESH_ROUTER_URL: ""                 # e.g. http://192.168.1.1
+      MESH_ROUTER_USER: "admin"
+      MESH_ROUTER_PASSWORD: ""
+      # Consecutive checks (about a minute each) a satellite must be offline.
+      MESH_OFFLINE_CHECKS: 5
+      # Receives the router's syslog (Administration → System Log → Remote Log
+      # Server = this host). Writes /data/router-logs/router-YYYY-MM-DD.log and
+      # alerts when the stuck-radio beacon failures appear. 0 turns it off.
+      MESH_SYSLOG_PORT: 5514
+      MESH_LOG_RETENTION_DAYS: 30
 
       # Optional: enables /status with richer detail. Empty keeps it returning
       # 404, which matters because the endpoint is reachable from the public

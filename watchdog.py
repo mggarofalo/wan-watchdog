@@ -49,7 +49,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import health  # noqa: E402
-import notifier
+import mesh  # noqa: E402
+import notifier  # noqa: E402
 from bgw320 import Gateway, GatewayError  # noqa: E402
 
 LOG = logging.getLogger("wan-watchdog")
@@ -155,6 +156,20 @@ class Config:
     dry_run: bool
     verify_instance: bool
     notify_token: str = ""
+    # Router mesh monitor (mesh.py). Empty URL disables node polling; port 0
+    # disables the syslog receiver. Either works without the other.
+    mesh_router_url: str = ""
+    mesh_router_user: str = ""
+    mesh_router_password: str = ""
+    mesh_offline_checks: int = 5
+    mesh_boot_grace: int = 600
+    mesh_syslog_port: int = 0
+    mesh_syslog_pattern: str = ""
+    mesh_syslog_threshold: int = 20
+    mesh_syslog_allowed_sources: str = ""
+    mesh_log_dir: str = "/data/router-logs"
+    mesh_log_retention_days: int = 30
+    mesh_log_max_mb_per_day: int = 100
 
 
 def load_config(require_code: bool = True) -> Config:
@@ -182,7 +197,21 @@ def load_config(require_code: bool = True) -> Config:
         dry_run=_env_bool("WATCHDOG_DRY_RUN"),
         verify_instance=_env_bool("WATCHDOG_VERIFY_INSTANCE", True),
         notify_token=_env("WATCHDOG_NOTIFY_TOKEN"),
+        mesh_router_url=_env("MESH_ROUTER_URL"),
+        mesh_router_user=_env("MESH_ROUTER_USER", "admin"),
+        mesh_router_password=os.environ.get("MESH_ROUTER_PASSWORD", ""),
+        mesh_offline_checks=max(1, _env_int("MESH_OFFLINE_CHECKS", 5)),
+        mesh_boot_grace=_env_int("MESH_BOOT_GRACE", 600),
+        mesh_syslog_port=_env_int("MESH_SYSLOG_PORT", 0),
+        mesh_syslog_pattern=_env("MESH_SYSLOG_PATTERN", mesh.DEFAULT_ALERT_PATTERN),
+        mesh_syslog_threshold=max(1, _env_int("MESH_SYSLOG_THRESHOLD", 20)),
+        mesh_syslog_allowed_sources=_env("MESH_SYSLOG_ALLOWED_SOURCES"),
+        mesh_log_dir=_env("MESH_LOG_DIR", "/data/router-logs"),
+        mesh_log_retention_days=_env_int("MESH_LOG_RETENTION_DAYS", 30),
+        mesh_log_max_mb_per_day=max(1, _env_int("MESH_LOG_MAX_MB_PER_DAY", 100)),
     )
+    if cfg.mesh_router_url and not cfg.mesh_router_password:
+        raise SystemExit("MESH_ROUTER_URL is set but MESH_ROUTER_PASSWORD is empty")
     if not cfg.external_url:
         raise SystemExit("WATCHDOG_EXTERNAL_URL is required "
                          "(e.g. https://health.example.com/healthz)")
@@ -217,6 +246,12 @@ class State:
     notification_incident: dict = dataclass_field(default_factory=dict)
     notification_outbox: list = dataclass_field(default_factory=list)
     notification_healthy_checks: int = 0
+    mesh_incident: dict = dataclass_field(default_factory=dict)
+    mesh_healthy_checks: int = 0
+    mesh_offline_counts: dict = dataclass_field(default_factory=dict)
+    mesh_router_failures: int = 0
+    mesh_router_uptime: float = 0.0
+    mesh_last: dict = dataclass_field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path) -> "State":
@@ -616,6 +651,8 @@ def build_status_provider(cfg: Config, state: State, instance_id: str):
             "dry_run": cfg.dry_run,
             "notification_incident": state.notification_incident.get("id"),
             "pending_notifications": len(state.notification_outbox),
+            "mesh": state.mesh_last,
+            "mesh_incident": state.mesh_incident.get("id"),
         }
     return provider
 
@@ -669,11 +706,31 @@ def main(argv: list[str] | None = None) -> int:
             LOG.warning("no BGW_ACCESS_CODE set — reboots would not work")
         LOG.info(check_dns_is_proxied(cfg.external_url, public_ip))
         LOG.info("verdict: %s", run_cycle(cfg, state, state_path, instance_id, act=False))
+        monitor = mesh.build(cfg)
+        if monitor and monitor.router:
+            monitor.sink = None  # do not bind the syslog port for a one-shot test
+            problems = monitor.check(state, state_path, act=False)
+            LOG.info("mesh: router %s; nodes %s; problems %s",
+                     state.mesh_last.get("router"),
+                     ", ".join(f"{n['alias']}={'online' if n['online'] else 'OFFLINE'}"
+                               for n in state.mesh_last.get("nodes", [])) or "-",
+                     [event for event, _m in problems] or "none")
         return 0
+
+    monitor = mesh.build(cfg)
 
     if args.once:
         run_cycle(cfg, state, state_path, instance_id)
+        if monitor:
+            monitor.sink = None
+            monitor.check(state, state_path)
         return 0
+
+    if monitor:
+        monitor.start(_STOP)
+        LOG.info("mesh monitor: router API %s, syslog %s",
+                 cfg.mesh_router_url or "off",
+                 f"udp/{cfg.mesh_syslog_port}" if cfg.mesh_syslog_port else "off")
 
     LOG.info("wan-watchdog starting: probing %s every %ds, rebooting after %d "
              "consecutive failures, at most once per %.1f h%s",
@@ -701,6 +758,13 @@ def main(argv: list[str] | None = None) -> int:
             maybe_scheduled_reboot(cfg, state, state_path)
         except Exception as exc:  # a watchdog that dies is worse than useless
             LOG.exception("unhandled error in check cycle: %s", exc)
+        if monitor:
+            # Separate try: a router API surprise must not cost a gateway check,
+            # and the reverse.
+            try:
+                monitor.check(state, state_path)
+            except Exception as exc:
+                LOG.exception("unhandled error in mesh check: %s", exc)
         _STOP.wait(cfg.check_interval)
 
     LOG.info("stopped")
