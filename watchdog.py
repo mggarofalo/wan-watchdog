@@ -162,6 +162,7 @@ class Config:
     mesh_router_user: str = ""
     mesh_router_password: str = ""
     mesh_offline_checks: int = 5
+    mesh_check_interval: int = 60
     mesh_boot_grace: int = 600
     mesh_syslog_port: int = 0
     mesh_syslog_pattern: str = ""
@@ -201,6 +202,7 @@ def load_config(require_code: bool = True) -> Config:
         mesh_router_user=_env("MESH_ROUTER_USER", "admin"),
         mesh_router_password=os.environ.get("MESH_ROUTER_PASSWORD", ""),
         mesh_offline_checks=max(1, _env_int("MESH_OFFLINE_CHECKS", 5)),
+        mesh_check_interval=max(10, _env_int("MESH_CHECK_INTERVAL", 60)),
         mesh_boot_grace=_env_int("MESH_BOOT_GRACE", 600),
         mesh_syslog_port=_env_int("MESH_SYSLOG_PORT", 0),
         mesh_syslog_pattern=_env("MESH_SYSLOG_PATTERN", mesh.DEFAULT_ALERT_PATTERN),
@@ -662,6 +664,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--once", action="store_true", help="run one cycle and exit")
     parser.add_argument("--test", action="store_true",
                         help="probe and report, but never reboot")
+    parser.add_argument("--mesh-test", action="store_true",
+                        help="check the router mesh once and exit; safe inside the running container")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -674,10 +678,23 @@ def main(argv: list[str] | None = None) -> int:
 
     _install_signal_handlers()
 
-    cfg = load_config(require_code=not args.test)
+    cfg = load_config(require_code=not (args.test or args.mesh_test))
     state_path = Path(cfg.state_file)
     state = State.load(state_path)
     instance_id = health.new_instance_id()
+
+    if args.mesh_test:
+        # Router check only: no health server, no syslog socket, no gateway
+        # probes and nothing persisted, so it is safe to run with
+        # `docker compose exec` inside the already-running container.
+        monitor = mesh.build(cfg)
+        if not monitor or not monitor.router:
+            LOG.error("MESH_ROUTER_URL is not set; nothing to test")
+            return 2
+        monitor.sink = None
+        problems = monitor.check(state, state_path, act=False)
+        _log_mesh_result(state, problems)
+        return 0 if state.mesh_last.get("router") == "ok" else 1
 
     health.serve_in_background(
         cfg.port, instance_id, build_status_provider(cfg, state, instance_id),
@@ -709,12 +726,7 @@ def main(argv: list[str] | None = None) -> int:
         monitor = mesh.build(cfg)
         if monitor and monitor.router:
             monitor.sink = None  # do not bind the syslog port for a one-shot test
-            problems = monitor.check(state, state_path, act=False)
-            LOG.info("mesh: router %s; nodes %s; problems %s",
-                     state.mesh_last.get("router"),
-                     ", ".join(f"{n['alias']}={'online' if n['online'] else 'OFFLINE'}"
-                               for n in state.mesh_last.get("nodes", [])) or "-",
-                     [event for event, _m in problems] or "none")
+            _log_mesh_result(state, monitor.check(state, state_path, act=False))
         return 0
 
     monitor = mesh.build(cfg)
@@ -728,8 +740,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if monitor:
         monitor.start(_STOP)
-        LOG.info("mesh monitor: router API %s, syslog %s",
-                 cfg.mesh_router_url or "off",
+        LOG.info("mesh monitor: router API %s every %ds, syslog %s",
+                 cfg.mesh_router_url or "off", cfg.mesh_check_interval,
                  f"udp/{cfg.mesh_syslog_port}" if cfg.mesh_syslog_port else "off")
 
     LOG.info("wan-watchdog starting: probing %s every %ds, rebooting after %d "
@@ -752,23 +764,54 @@ def main(argv: list[str] | None = None) -> int:
         # Fail loudly now rather than at 3am when it actually matters.
         LOG.error("gateway login failed at startup: %s — reboots will not work", exc)
 
+    next_mesh = time.monotonic()
     while not _STOP.is_set():
         try:
             run_cycle(cfg, state, state_path, instance_id)
             maybe_scheduled_reboot(cfg, state, state_path)
         except Exception as exc:  # a watchdog that dies is worse than useless
             LOG.exception("unhandled error in check cycle: %s", exc)
-        if monitor:
-            # Separate try: a router API surprise must not cost a gateway check,
-            # and the reverse.
+        next_mesh = wait_for_next_cycle(cfg, monitor, state, state_path, next_mesh)
+
+    LOG.info("stopped")
+    return 0
+
+
+def wait_for_next_cycle(cfg: Config, monitor, state: State, state_path: Path,
+                        next_mesh: float) -> float:
+    """Wait out the gateway interval, running mesh checks on their own cadence.
+
+    The gateway check interval is often several minutes; satellite outages
+    should be noticed within about a minute. Mesh checks run on this (main)
+    thread so only one thread ever writes the state file. A gateway reboot's
+    post-reboot grace still pauses them, since that wait happens in run_cycle.
+    Returns when the next mesh check is due, carried across gateway cycles.
+    """
+    deadline = time.monotonic() + cfg.check_interval
+    while not _STOP.is_set():
+        now = time.monotonic()
+        if monitor and now >= next_mesh:
+            # Separate try: a router API surprise must not cost a gateway
+            # check, and the reverse.
             try:
                 monitor.check(state, state_path)
             except Exception as exc:
                 LOG.exception("unhandled error in mesh check: %s", exc)
-        _STOP.wait(cfg.check_interval)
+            next_mesh = time.monotonic() + cfg.mesh_check_interval
+        now = time.monotonic()
+        if now >= deadline:
+            break
+        wake = min(deadline, next_mesh) if monitor else deadline
+        _STOP.wait(max(0.0, wake - now))
+    return next_mesh
 
-    LOG.info("stopped")
-    return 0
+
+def _log_mesh_result(state: State, problems: list) -> None:
+    LOG.info("mesh: router %s; nodes %s; problems %s",
+             state.mesh_last.get("router"),
+             ", ".join(f"{n['alias']}={'online' if n['online'] else 'OFFLINE'}"
+                       for n in state.mesh_last.get("nodes", [])) or "-",
+             [event for event, _m in problems] or "none")
 
 
 if __name__ == "__main__":

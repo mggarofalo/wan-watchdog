@@ -254,6 +254,43 @@ class MeshMonitorTests(unittest.TestCase):
                          "wan-watchdog local diagnostics")
 
 
+class CadenceTests(unittest.TestCase):
+    """Mesh checks keep their own one-minute cadence inside a longer gateway interval."""
+
+    def setUp(self):
+        self.t = 0.0
+        self.cfg = Mock(check_interval=300, mesh_check_interval=60)
+        self.monitor = Mock()
+        self.monitor.check.side_effect = lambda *a, **k: self.calls.append(self.t)
+        self.calls = []
+
+        def wait(seconds):
+            self.t += seconds
+            return False
+        patches = [
+            patch("watchdog.time.monotonic", side_effect=lambda: self.t),
+            patch.object(watchdog._STOP, "wait", side_effect=wait),
+            patch.object(watchdog._STOP, "is_set", return_value=False),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_mesh_runs_every_minute_across_gateway_cycles(self):
+        next_mesh = 0.0
+        next_mesh = watchdog.wait_for_next_cycle(self.cfg, self.monitor, None, None, next_mesh)
+        self.assertEqual(self.t, 300)
+        self.t += 20  # the gateway cycle's own probes take time
+        watchdog.wait_for_next_cycle(self.cfg, self.monitor, None, None, next_mesh)
+        # A steady minute cadence, unaffected by when the gateway cycle runs.
+        self.assertEqual(self.calls, list(range(0, 601, 60)))
+
+    def test_without_monitor_waits_once(self):
+        watchdog.wait_for_next_cycle(self.cfg, None, None, None, 0.0)
+        self.assertEqual(self.t, 300)
+        self.assertEqual(watchdog._STOP.wait.call_count, 1)
+
+
 class ParseTests(unittest.TestCase):
     def test_parse_uptime(self):
         self.assertEqual(mesh.parse_uptime("x(42 secs since boot)"), 42)
