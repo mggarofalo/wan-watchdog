@@ -8,6 +8,7 @@
 | --- | --- | --- |
 | Local watchdog | Probe diagnosis and reboot decisions | Queued until it can reach the notification service |
 | Cloud monitor | Whether the public health endpoint is reachable | Independent of the home connection |
+| [Router mesh monitor](router-mesh.md) | Satellite status and router log faults | Queued with local messages; separate incident and the title "Router mesh" |
 
 Both can publish to the same ntfy topic. Their incidents are tracked separately,
 so one physical outage can produce messages from both. The phone needs cellular

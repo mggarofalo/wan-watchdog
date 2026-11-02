@@ -56,6 +56,11 @@ The [notification guide](notifications.md) covers retries and recovery. Notifica
 recovery requires three healthy checks; this count is independent of the reboot
 failure threshold and is not currently configurable.
 
+## Router mesh monitor
+
+The optional ASUS AiMesh monitor uses the `MESH_*` variables. The
+[router mesh guide](router-mesh.md) lists them and explains the alerts.
+
 ## HTTP endpoints
 
 `GET /healthz` returns uncached JSON:

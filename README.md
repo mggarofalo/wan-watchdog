@@ -37,6 +37,7 @@ working connection and is not guaranteed to restore it.
 | --- | --- | --- |
 | Local watchdog | Diagnose failures and request rate-limited software reboots | Local diagnosis, reboot decisions, confirmed recovery |
 | [Cloud monitor](cloud-monitor/README.md) | Check public reachability every five minutes | One outage alert after two failures; recovery after three successes |
+| [Router mesh monitor](docs/router-mesh.md) (optional) | Keep an ASUS AiMesh router's syslog; watch satellite status | "Router needs a reboot" when a satellite drops or the radio loop starts; never reboots |
 
 Local notifications are deduplicated by event within an incident and survive
 container restarts. They cannot be delivered while outbound internet is down.
@@ -48,6 +49,7 @@ request alone that the gateway caused the outage.
 - [Install and verify](docs/setup.md)
 - [Configuration reference](docs/configuration.md)
 - [Notifications and recovery](docs/notifications.md)
+- [Router mesh monitor](docs/router-mesh.md)
 - [Operate, upgrade, and troubleshoot](docs/operations.md)
 - [Probe logic and architecture](docs/architecture.md)
 - [Development and image releases](docs/development.md)

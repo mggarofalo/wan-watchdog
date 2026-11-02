@@ -212,7 +212,7 @@ def main() -> int:
     test_health_server()
     test_state()
     test_html_parsing()
-    suite = unittest.defaultTestLoader.loadTestsFromName("test_notifier")
+    suite = unittest.defaultTestLoader.loadTestsFromNames(["test_notifier", "test_mesh"])
     result = unittest.TextTestRunner().run(suite)
     if not result.wasSuccessful():
         failures.append("local notifier/release policy tests failed")
